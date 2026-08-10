@@ -109,6 +109,158 @@ function uuid() {
   return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
 }
 
+// --- Google "Gespeichert"-Listen (CSV) ---
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else if (c === "\r") {
+      // skip
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function parseGoogleSavedListCsv(text, listName) {
+  const rows = parseCsvRows(text);
+  const headerIdx = rows.findIndex((r) => r[0] && r[0].trim() === "Titel");
+  if (headerIdx === -1) return [];
+  const results = [];
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || !r[0]) continue;
+    const title = (r[0] || "").trim();
+    const note = (r[1] || "").trim();
+    const url = (r[2] || "").trim();
+    if (!title || !url.includes("/maps/place/")) continue;
+    results.push({ listName, title, note });
+  }
+  return results;
+}
+
+// --- Google Timeline (location-history.json) ---
+function parseTimelineVisits(text) {
+  const data = JSON.parse(text);
+  const items = Array.isArray(data) ? data : data.semanticSegments || data.timelineObjects || [];
+  if (!Array.isArray(items)) throw new Error("Ungültiges Format");
+  const map = new Map();
+  for (const item of items) {
+    const visit = item && item.visit;
+    if (!visit || !visit.topCandidate) continue;
+    const tc = visit.topCandidate;
+    const placeId = tc.placeID || tc.placeId;
+    const loc = tc.placeLocation;
+    if (!placeId || !loc) continue;
+    const m = String(loc).match(/(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)/);
+    if (!m) continue;
+    const lat = parseFloat(m[1]);
+    const lng = parseFloat(m[2]);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) continue;
+    const existing = map.get(placeId);
+    if (existing) existing.count++;
+    else map.set(placeId, { placeId, lat, lng, count: 1 });
+  }
+  return Array.from(map.values());
+}
+
+// --- Places API Auflösung (client-seitig, nutzt den in den Einstellungen gespeicherten Key) ---
+async function resolvePlaceByText(query, locationBias) {
+  try {
+    const request = {
+      textQuery: query,
+      fields: ["displayName", "formattedAddress", "location"],
+      maxResultCount: 1,
+    };
+    if (locationBias) request.locationBias = locationBias;
+    const { places } = await google.maps.places.Place.searchByText(request);
+    if (places && places[0] && places[0].location) {
+      const p = places[0];
+      return {
+        name: p.displayName,
+        address: p.formattedAddress,
+        lat: p.location.lat(),
+        lng: p.location.lng(),
+      };
+    }
+  } catch (err) {
+    console.error("Places Textsuche fehlgeschlagen", query, err);
+  }
+  return null;
+}
+
+async function resolvePlaceById(placeId) {
+  try {
+    const place = new google.maps.places.Place({ id: placeId });
+    await place.fetchFields({ fields: ["displayName", "formattedAddress", "location"] });
+    if (!place.location) return null;
+    return {
+      name: place.displayName,
+      address: place.formattedAddress,
+      lat: place.location.lat(),
+      lng: place.location.lng(),
+    };
+  } catch (err) {
+    console.error("Place-Details fehlgeschlagen", placeId, err);
+    return null;
+  }
+}
+
+function importProgressOverlay(label) {
+  const el = document.createElement("div");
+  el.id = "import-progress-overlay";
+  el.style.cssText =
+    "position:fixed;inset:0;background:rgba(10,22,40,0.96);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;padding:24px;text-align:center;gap:14px;";
+  el.innerHTML = `
+    <div style="font-size:2rem;">📍</div>
+    <div style="font-size:1rem; font-weight:600;">${escapeHtml(label)}</div>
+    <div id="import-progress-text" style="font-size:0.85rem; color:var(--text-faint, #a9b6c9);">0 / 0</div>
+    <div style="width:220px; height:6px; background:rgba(255,255,255,0.15); border-radius:3px; overflow:hidden;">
+      <div id="import-progress-bar" style="height:100%; width:0%; background:#e8c766; transition:width 0.2s;"></div>
+    </div>
+    <div style="font-size:0.72rem; color:var(--text-faint, #a9b6c9); max-width:280px;">Bitte die App währenddessen geöffnet lassen.</div>
+  `;
+  document.body.appendChild(el);
+  return {
+    update: (done, total) => {
+      const t = el.querySelector("#import-progress-text");
+      const b = el.querySelector("#import-progress-bar");
+      if (t) t.textContent = `${done} / ${total}`;
+      if (b) b.style.width = total ? `${Math.round((done / total) * 100)}%` : "0%";
+    },
+    close: () => el.remove(),
+  };
+}
+
 function emptyCategories() {
   const obj = {};
   CATEGORIES.forEach((c) => (obj[c.key] = []));
@@ -996,11 +1148,11 @@ function renderMap(app) {
 }
 
 function loadGoogleMaps(apiKey) {
-  if (window.google && window.google.maps) return Promise.resolve();
+  if (window.google && window.google.maps && window.google.maps.places) return Promise.resolve();
   if (mapsLoadPromise) return mapsLoadPromise;
   mapsLoadPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&libraries=places&v=weekly`;
     script.async = true;
     script.onload = () => resolve();
     script.onerror = () => {
@@ -1117,6 +1269,28 @@ function renderSettings(app) {
         <label class="btn btn-secondary btn-block" style="text-align:center; cursor:pointer;">
           Datei auswählen
           <input type="file" id="gmaps-import-input" accept="application/json,.json,.geojson" class="visually-hidden" />
+        </label>
+      </div>
+
+      <div class="settings-section">
+        <h3>📋 Google-Listen importieren (CSV)</h3>
+        <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
+          Exportiere deine „Gespeichert"-Listen über <a href="https://takeout.google.com/settings/takeout/custom/maps" target="_blank" rel="noopener">Google Takeout</a> (Kategorie „Gespeichert" statt „Maps" auswählen), entpacke die ZIP-Datei und wähle hier alle CSV-Dateien aus dem Ordner „Gespeichert" gleichzeitig aus. Jeder Ort wird über die Google Places API einzeln anhand seines Namens gesucht – das dauert bei vielen Orten mehrere Minuten und kann geringe Kosten über den Google-Cloud-Freibetrag hinaus verursachen. Dafür muss in deinem Google-Cloud-Projekt zusätzlich die „Places API (New)" aktiviert sein.
+        </p>
+        <label class="btn btn-secondary btn-block" style="text-align:center; cursor:pointer;">
+          CSV-Dateien auswählen
+          <input type="file" id="gmaps-list-import-input" accept=".csv,text/csv" multiple class="visually-hidden" />
+        </label>
+      </div>
+
+      <div class="settings-section">
+        <h3>🕒 Google Timeline importieren</h3>
+        <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
+          Exportiere deinen Zeitachsenverlauf direkt auf dem Handy: Google Maps App → Profilbild → Einstellungen → „Personenbezogene Inhalte" → „Standortverlauf exportieren" → Datei „location-history.json" wählen. Besuchte Orte werden erkannt, doppelte Besuche zusammengefasst und über die Places API benannt.
+        </p>
+        <label class="btn btn-secondary btn-block" style="text-align:center; cursor:pointer;">
+          Datei auswählen
+          <input type="file" id="gmaps-timeline-import-input" accept="application/json,.json" class="visually-hidden" />
         </label>
       </div>
 
@@ -1255,6 +1429,179 @@ function renderSettings(app) {
           }));
           saveDestinations(current.concat(newDests));
           toast(`${newDests.length} Orte importiert`);
+          renderSettings(app);
+        }
+      );
+    };
+    reader.readAsText(file);
+  });
+
+  app.querySelector("#gmaps-list-import-input").addEventListener("change", (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    const currentSettings = loadSettings();
+    if (!currentSettings.mapsApiKey) {
+      toast("Bitte zuerst einen Google Maps API-Key oben speichern");
+      e.target.value = "";
+      return;
+    }
+    Promise.all(
+      files.map(
+        (f) =>
+          new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({ name: f.name, text: String(reader.result) });
+            reader.onerror = () => resolve(null);
+            reader.readAsText(f);
+          })
+      )
+    ).then((fileResults) => {
+      e.target.value = "";
+      let rows = [];
+      for (const fr of fileResults) {
+        if (!fr) continue;
+        const listName = fr.name.replace(/\.csv$/i, "").replace(/\(\d+\)$/, "").trim();
+        try {
+          rows = rows.concat(parseGoogleSavedListCsv(fr.text, listName));
+        } catch (err) {
+          console.error("CSV-Parsing fehlgeschlagen", fr.name, err);
+        }
+      }
+      if (!rows.length) {
+        toast("Keine Orte in den ausgewählten Dateien gefunden");
+        return;
+      }
+      const current = loadDestinations();
+      const existingNames = new Set(current.map((d) => (d.name || "").trim().toLowerCase()));
+      const fresh = rows.filter((r) => !existingNames.has(r.title.trim().toLowerCase()));
+      if (!fresh.length) {
+        toast("Alle Orte aus diesen Listen sind bereits vorhanden");
+        return;
+      }
+      confirmModal(
+        "Orte auflösen und importieren?",
+        `${fresh.length} von ${rows.length} Orten aus ${files.length} Liste(n) sind neu. Die Koordinaten werden jetzt einzeln über die Google Places API ermittelt – das kann mehrere Minuten dauern und ggf. geringe Kosten verursachen.`,
+        async () => {
+          const overlay = importProgressOverlay("Orte werden aufgelöst …");
+          try {
+            await loadGoogleMaps(currentSettings.mapsApiKey);
+          } catch (err) {
+            overlay.close();
+            toast("Google Maps konnte nicht geladen werden – bitte API-Key prüfen");
+            return;
+          }
+          const newDests = [];
+          let done = 0;
+          for (const r of fresh) {
+            overlay.update(done, fresh.length);
+            const resolved = await resolvePlaceByText(`${r.title}, ${r.listName}`);
+            if (resolved) {
+              newDests.push({
+                id: uuid(),
+                name: resolved.name || r.title,
+                country: "",
+                continent: guessContinent(resolved.lat, resolved.lng),
+                iata: "---",
+                status: "geplant",
+                rating: 0,
+                favorite: false,
+                notes: [`Liste: ${r.listName}`, r.note, resolved.address].filter(Boolean).join(" · "),
+                photos: [],
+                lat: resolved.lat,
+                lng: resolved.lng,
+                categories: {},
+              });
+            }
+            done++;
+            await new Promise((res) => setTimeout(res, 120));
+          }
+          overlay.update(fresh.length, fresh.length);
+          overlay.close();
+          if (!newDests.length) {
+            toast("Es konnten keine Orte aufgelöst werden");
+            return;
+          }
+          const latest = loadDestinations();
+          saveDestinations(latest.concat(newDests));
+          toast(`${newDests.length} von ${fresh.length} Orten importiert`);
+          renderSettings(app);
+        }
+      );
+    });
+  });
+
+  app.querySelector("#gmaps-timeline-import-input").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const currentSettings = loadSettings();
+    if (!currentSettings.mapsApiKey) {
+      toast("Bitte zuerst einen Google Maps API-Key oben speichern");
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      e.target.value = "";
+      let visits;
+      try {
+        visits = parseTimelineVisits(String(reader.result));
+      } catch (err) {
+        toast("Datei konnte nicht gelesen werden – bitte die location-history.json wählen");
+        return;
+      }
+      if (!visits.length) {
+        toast("Keine besuchten Orte in dieser Datei gefunden");
+        return;
+      }
+      const current = loadDestinations();
+      const existingKeys = new Set(
+        current.filter((d) => typeof d.lat === "number" && typeof d.lng === "number").map((d) => `${d.lat.toFixed(4)},${d.lng.toFixed(4)}`)
+      );
+      const fresh = visits.filter((v) => !existingKeys.has(`${v.lat.toFixed(4)},${v.lng.toFixed(4)}`));
+      if (!fresh.length) {
+        toast("Alle Orte aus der Zeitachse sind bereits vorhanden");
+        return;
+      }
+      confirmModal(
+        "Zeitachse importieren?",
+        `${fresh.length} von ${visits.length} eindeutig besuchten Orten sind neu. Die Namen werden jetzt einzeln über die Google Places API ermittelt – das kann mehrere Minuten dauern.`,
+        async () => {
+          const overlay = importProgressOverlay("Besuchte Orte werden benannt …");
+          try {
+            await loadGoogleMaps(currentSettings.mapsApiKey);
+          } catch (err) {
+            overlay.close();
+            toast("Google Maps konnte nicht geladen werden – bitte API-Key prüfen");
+            return;
+          }
+          const newDests = [];
+          let done = 0;
+          for (const v of fresh) {
+            overlay.update(done, fresh.length);
+            const resolved = await resolvePlaceById(v.placeId);
+            newDests.push({
+              id: uuid(),
+              name: (resolved && resolved.name) || "Besuchter Ort",
+              country: "",
+              continent: guessContinent(v.lat, v.lng),
+              iata: "---",
+              status: "besucht",
+              rating: 0,
+              favorite: false,
+              notes: [`Aus Google Timeline · ${v.count}× besucht`, resolved && resolved.address].filter(Boolean).join(" · "),
+              photos: [],
+              lat: v.lat,
+              lng: v.lng,
+              categories: {},
+            });
+            done++;
+            await new Promise((res) => setTimeout(res, 120));
+          }
+          overlay.update(fresh.length, fresh.length);
+          overlay.close();
+          const latest = loadDestinations();
+          saveDestinations(latest.concat(newDests));
+          toast(`${newDests.length} Orte aus der Zeitachse importiert`);
           renderSettings(app);
         }
       );
