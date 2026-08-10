@@ -195,13 +195,13 @@ a { color: var(--gold-light); }
    PIN Screen
    =========================================================== */
 .pin-screen {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: var(--space-6);
-  padding: var(--space-5);
+  padding: calc(var(--space-5) + env(safe-area-inset-top, 0px)) var(--space-5) calc(var(--space-5) + env(safe-area-inset-bottom, 0px));
   text-align: center;
 }
 .pin-dots {
