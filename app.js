@@ -76,6 +76,35 @@ function saveSettings(s) {
   localStorage.setItem(LS_SETTINGS, JSON.stringify(s));
 }
 
+function guessContinent(lat, lng) {
+  if (typeof lat !== "number" || typeof lng !== "number") return "europa";
+  if (lat < -8 && lng > 105) return "ozeanien";
+  if (lat < -15 && lng < -130) return "ozeanien";
+  if (lat < 13 && lng < -34 && lng > -95) return "suedamerika";
+  if (lng < -30 && lat >= 5) return "nordamerika";
+  if (lat < 38 && lat > -38 && lng > -20 && lng < 55) return "afrika";
+  if (lat > 34 && lng > -25 && lng < 45) return "europa";
+  return "asien";
+}
+
+function parseGoogleTakeoutPlaces(text) {
+  const data = JSON.parse(text);
+  const features = Array.isArray(data) ? data : data.features;
+  if (!Array.isArray(features)) throw new Error("Ungültiges Format");
+  const results = [];
+  for (const f of features) {
+    if (!f || !f.geometry || f.geometry.type !== "Point" || !Array.isArray(f.geometry.coordinates)) continue;
+    const [lng, lat] = f.geometry.coordinates;
+    if (typeof lat !== "number" || typeof lng !== "number") continue;
+    const props = f.properties || {};
+    const loc = props.location || {};
+    const name = loc.name || props.name || loc.address || "Unbenannter Ort";
+    const address = loc.address || props.address || "";
+    results.push({ name, address, lat, lng });
+  }
+  return results;
+}
+
 function uuid() {
   return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
 }
@@ -1081,6 +1110,17 @@ function renderSettings(app) {
       </div>
 
       <div class="settings-section">
+        <h3>📍 Aus Google Maps importieren</h3>
+        <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
+          Lade deine gespeicherten Orte über <a href="https://takeout.google.com/settings/takeout/custom/maps" target="_blank" rel="noopener">Google Takeout</a> herunter (nur „Meine Orte" bzw. „Gespeichert" auswählen), entpacke die ZIP-Datei und wähle hier eine der JSON-Dateien aus dem Ordner „Saved Places" bzw. „Gespeicherte Orte" aus. Kontinent wird automatisch geschätzt, IATA-Code und Details kannst du danach ergänzen.
+        </p>
+        <label class="btn btn-secondary btn-block" style="text-align:center; cursor:pointer;">
+          Datei auswählen
+          <input type="file" id="gmaps-import-input" accept="application/json,.json,.geojson" class="visually-hidden" />
+        </label>
+      </div>
+
+      <div class="settings-section">
         <h3>💾 Daten-Backup</h3>
         <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
           ${dests.length} Zielort${dests.length === 1 ? "" : "e"} gespeichert. Erstelle regelmäßig ein Backup, da die Daten nur lokal im Browser liegen.
@@ -1165,6 +1205,59 @@ function renderSettings(app) {
       } catch (err) {
         toast("Datei konnte nicht gelesen werden");
       }
+    };
+    reader.readAsText(file);
+  });
+
+  app.querySelector("#gmaps-import-input").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      let places;
+      try {
+        places = parseGoogleTakeoutPlaces(reader.result);
+      } catch (err) {
+        toast("Datei konnte nicht gelesen werden – bitte eine JSON-Datei aus dem Google-Takeout-Export wählen");
+        return;
+      }
+      if (!places.length) {
+        toast("Keine Orte in dieser Datei gefunden");
+        return;
+      }
+      const current = loadDestinations();
+      const existingKeys = new Set(
+        current.filter((d) => typeof d.lat === "number" && typeof d.lng === "number").map((d) => `${d.lat.toFixed(4)},${d.lng.toFixed(4)}`)
+      );
+      const fresh = places.filter((p) => !existingKeys.has(`${p.lat.toFixed(4)},${p.lng.toFixed(4)}`));
+      if (!fresh.length) {
+        toast("Alle Orte aus dieser Datei sind bereits vorhanden");
+        return;
+      }
+      confirmModal(
+        "Orte importieren?",
+        `${fresh.length} neue Orte aus Google Maps gefunden${places.length - fresh.length > 0 ? ` (${places.length - fresh.length} bereits vorhanden)` : ""}. Sie werden automatisch nach Kontinent sortiert und als „Besucht“ angelegt – IATA-Code, Status und Details kannst du danach in jedem Zielort ergänzen.`,
+        () => {
+          const newDests = fresh.map((p) => ({
+            id: uuid(),
+            name: p.name,
+            country: "",
+            continent: guessContinent(p.lat, p.lng),
+            iata: "---",
+            status: "besucht",
+            rating: 0,
+            favorite: false,
+            notes: p.address || "",
+            photos: [],
+            lat: p.lat,
+            lng: p.lng,
+            categories: {},
+          }));
+          saveDestinations(current.concat(newDests));
+          toast(`${newDests.length} Orte importiert`);
+          renderSettings(app);
+        }
+      );
     };
     reader.readAsText(file);
   });
