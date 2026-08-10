@@ -1126,9 +1126,9 @@ function renderMap(app) {
 
   app.innerHTML = `
     ${topBar("Karte · Alle Pins", {})}
-    <div class="screen" style="padding-bottom: 90px;">
+    <div class="screen" style="padding: var(--space-3) var(--space-4) 60px;">
       <div id="map-canvas"></div>
-      <p style="color:var(--text-faint); font-size:0.78rem; margin-top:12px; text-align:center;">
+      <p style="color:var(--text-faint); font-size:0.72rem; margin-top:6px; text-align:center;">
         ${dests.filter((d) => geocodeCandidates(d)).length} von ${dests.length} Zielorten mit Koordinaten angezeigt.
       </p>
     </div>
@@ -1164,6 +1164,28 @@ function loadGoogleMaps(apiKey) {
   return mapsLoadPromise;
 }
 
+let clustererLoadPromise = null;
+function loadMarkerClusterer() {
+  if (window.markerClusterer && window.markerClusterer.MarkerClusterer) return Promise.resolve();
+  if (clustererLoadPromise) return clustererLoadPromise;
+  clustererLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://unpkg.com/@googlemaps/markerclusterer/dist/index.min.js";
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => {
+      clustererLoadPromise = null;
+      reject(new Error("MarkerClusterer failed to load"));
+    };
+    document.head.appendChild(script);
+  });
+  return clustererLoadPromise;
+}
+
+function cssEscape(str) {
+  return String(str).replace(/["\\]/g, "\\$&");
+}
+
 function initMap(dests) {
   const canvas = document.getElementById("map-canvas");
   if (!canvas || !window.google) return;
@@ -1181,39 +1203,89 @@ function initMap(dests) {
     styles: darkMapStyle(),
     streetViewControl: false,
     mapTypeControl: false,
+    clickableIcons: false,
   });
 
   const bounds = new google.maps.LatLngBounds();
+  const markers = [];
+  let openInfo = null;
 
   pins.forEach(({ d, pos }) => {
     const st = STATUS[d.status] || STATUS.geplant;
+    const hasCode = d.iata && d.iata !== "---";
     const marker = new google.maps.Marker({
       position: pos,
-      map: mapInstance,
-      title: `${d.iata} · ${d.name}`,
-      label: { text: d.iata, color: "#0a1628", fontWeight: "700", fontSize: "10px" },
+      title: `${hasCode ? d.iata + " · " : ""}${d.name}`,
+      label: hasCode
+        ? { text: d.iata, color: "#0a1628", fontWeight: "700", fontSize: "9px" }
+        : null,
       icon: {
         path: google.maps.SymbolPath.CIRCLE,
         fillColor: "#d4af37",
         fillOpacity: 1,
         strokeColor: "#0a1628",
-        strokeWeight: 2,
-        scale: 16,
+        strokeWeight: 1.5,
+        scale: hasCode ? 10 : 6,
       },
     });
     const info = new google.maps.InfoWindow({
-      content: `<div style="color:#0a1628; font-family: sans-serif; min-width:140px;">
-        <strong>${escapeHtml(d.iata)} · ${escapeHtml(d.name)}</strong><br/>
-        ${st.emoji} ${st.label}${d.status === "besucht" && d.rating ? " · " + starString(d.rating) : ""}
+      content: `<div class="map-infowindow" style="color:#0a1628; font-family: sans-serif; min-width:160px;">
+        <strong>${hasCode ? escapeHtml(d.iata) + " · " : ""}${escapeHtml(d.name)}</strong><br/>
+        <span style="font-size:0.85em;">${st.emoji} ${st.label}${d.status === "besucht" && d.rating ? " · " + starString(d.rating) : ""}</span>
+        <div style="margin-top:8px;">
+          <button type="button" data-dest-id="${escapeHtml(d.id)}" class="map-edit-btn" style="background:#0a1628; color:#d4af37; border:none; border-radius:8px; padding:6px 12px; font-size:0.82rem; font-weight:600; cursor:pointer; width:100%;">✏️ Bearbeiten</button>
+        </div>
       </div>`,
     });
-    marker.addListener("click", () => {
-      info.open(mapInstance, marker);
+    google.maps.event.addListener(info, "domready", () => {
+      const btn = document.querySelector(`.map-edit-btn[data-dest-id="${cssEscape(d.id)}"]`);
+      if (btn) {
+        btn.addEventListener("click", () => {
+          navigate("#/dest-edit/" + encodeURIComponent(d.id));
+        });
+      }
     });
+    marker.addListener("click", () => {
+      if (openInfo) openInfo.close();
+      info.open(mapInstance, marker);
+      openInfo = info;
+    });
+    markers.push(marker);
     bounds.extend(pos);
   });
 
   if (pins.length > 1) mapInstance.fitBounds(bounds);
+
+  // Cluster markers so hundreds of pins don't overlap into an unreadable blob
+  // and so zooming stays fast (only visible clusters/markers are redrawn).
+  loadMarkerClusterer()
+    .then(() => {
+      new window.markerClusterer.MarkerClusterer({
+        map: mapInstance,
+        markers,
+        renderer: {
+          render: ({ count, position }) =>
+            new google.maps.Marker({
+              position,
+              label: { text: String(count), color: "#0a1628", fontWeight: "700", fontSize: "12px" },
+              icon: {
+                path: google.maps.SymbolPath.CIRCLE,
+                fillColor: "#d4af37",
+                fillOpacity: 0.95,
+                strokeColor: "#0a1628",
+                strokeWeight: 2,
+                scale: Math.min(14 + Math.log(count) * 4, 28),
+              },
+              zIndex: 1000 + count,
+            }),
+        },
+      });
+    })
+    .catch((err) => {
+      // Clustering is an enhancement only — fall back to plain markers already on the map.
+      console.error(err);
+      markers.forEach((m) => m.setMap(mapInstance));
+    });
 }
 
 function darkMapStyle() {
