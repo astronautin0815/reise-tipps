@@ -194,22 +194,67 @@ function parseTimelineVisits(text) {
 }
 
 // --- Places API Auflösung (client-seitig, nutzt den in den Einstellungen gespeicherten Key) ---
+function extractCountryCityFromComponents(components) {
+  if (!components || !components.length) return { country: "", city: "" };
+  const find = (type) => {
+    const c = components.find((c) => (c.types || []).includes(type));
+    return c ? c.longText || c.long_name || "" : "";
+  };
+  const country = find("country");
+  const city =
+    find("locality") ||
+    find("postal_town") ||
+    find("sublocality") ||
+    find("administrative_area_level_2") ||
+    find("administrative_area_level_1") ||
+    "";
+  return { country, city };
+}
+
+// Best-effort fallback for when addressComponents aren't available: parse the
+// trailing segments of a formatted address string, e.g. "Unter den Linden 1, 10117 Berlin, Deutschland"
+function parseAddressForCountryCity(address) {
+  if (!address) return { country: "", city: "" };
+  const parts = address
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (!parts.length) return { country: "", city: "" };
+  const country = parts[parts.length - 1];
+  let city = "";
+  for (let i = parts.length - 2; i >= 0; i--) {
+    let seg = parts[i].replace(/^\d{4,6}\s+/, "");
+    if (/^[A-Za-z]{2}\s*\d{3,6}$/.test(seg) || /^\d+$/.test(seg) || seg.length <= 2) continue;
+    city = seg;
+    break;
+  }
+  return { country, city };
+}
+
 async function resolvePlaceByText(query, locationBias) {
   try {
     const request = {
       textQuery: query,
-      fields: ["displayName", "formattedAddress", "location"],
+      fields: ["displayName", "formattedAddress", "location", "addressComponents"],
       maxResultCount: 1,
     };
     if (locationBias) request.locationBias = locationBias;
     const { places } = await google.maps.places.Place.searchByText(request);
     if (places && places[0] && places[0].location) {
       const p = places[0];
+      let { country, city } = extractCountryCityFromComponents(p.addressComponents);
+      if (!country && !city) {
+        const fallback = parseAddressForCountryCity(p.formattedAddress);
+        country = country || fallback.country;
+        city = city || fallback.city;
+      }
       return {
         name: p.displayName,
         address: p.formattedAddress,
         lat: p.location.lat(),
         lng: p.location.lng(),
+        country,
+        city,
       };
     }
   } catch (err) {
@@ -221,13 +266,21 @@ async function resolvePlaceByText(query, locationBias) {
 async function resolvePlaceById(placeId) {
   try {
     const place = new google.maps.places.Place({ id: placeId });
-    await place.fetchFields({ fields: ["displayName", "formattedAddress", "location"] });
+    await place.fetchFields({ fields: ["displayName", "formattedAddress", "location", "addressComponents"] });
     if (!place.location) return null;
+    let { country, city } = extractCountryCityFromComponents(place.addressComponents);
+    if (!country && !city) {
+      const fallback = parseAddressForCountryCity(place.formattedAddress);
+      country = country || fallback.country;
+      city = city || fallback.city;
+    }
     return {
       name: place.displayName,
       address: place.formattedAddress,
       lat: place.location.lat(),
       lng: place.location.lng(),
+      country,
+      city,
     };
   } catch (err) {
     console.error("Place-Details fehlgeschlagen", placeId, err);
@@ -472,7 +525,8 @@ function renderHome(app) {
       (d) =>
         d.name.toLowerCase().includes(search) ||
         d.iata.toLowerCase().includes(search) ||
-        (d.country || "").toLowerCase().includes(search)
+        (d.country || "").toLowerCase().includes(search) ||
+        (d.city || "").toLowerCase().includes(search)
     );
     searchResultsHtml = `
       <div class="section-label">Suchergebnisse (${results.length})</div>
@@ -546,9 +600,11 @@ function renderHome(app) {
   });
 }
 
-function destCardHtml(d) {
+function destCardHtml(d, opts) {
+  opts = opts || {};
   const st = STATUS[d.status] || STATUS.geplant;
   const continentLabel = (CONTINENTS.find((c) => c.key === d.continent) || {}).label || "";
+  const locationLabel = [d.city, d.country].filter(Boolean).join(", ") || continentLabel;
   return `
     <div class="dest-card" data-dest-id="${d.id}">
       <div class="dest-iata">${escapeHtml(d.iata)}</div>
@@ -557,11 +613,63 @@ function destCardHtml(d) {
         <div class="dest-sub">
           <span class="status-pill status-${d.status}">${st.emoji} ${st.label}</span>
           ${d.status === "besucht" && d.rating ? `<span class="dest-stars">${starString(d.rating)}</span>` : ""}
-          <span>${escapeHtml(d.country || continentLabel)}</span>
+          ${!opts.hideLocation && locationLabel ? `<span>${escapeHtml(locationLabel)}</span>` : ""}
         </div>
       </div>
     </div>
   `;
+}
+
+const UNKNOWN_COUNTRY = "Unbekanntes Land";
+const UNKNOWN_CITY = "Weitere Orte";
+
+function groupByCountryAndCity(dests) {
+  const byCountry = new Map();
+  for (const d of dests) {
+    const country = (d.country || "").trim() || UNKNOWN_COUNTRY;
+    if (!byCountry.has(country)) byCountry.set(country, new Map());
+    const byCity = byCountry.get(country);
+    const city = (d.city || "").trim() || UNKNOWN_CITY;
+    if (!byCity.has(city)) byCity.set(city, []);
+    byCity.get(city).push(d);
+  }
+  const sortAlpha = (a, b) => {
+    if (a === UNKNOWN_COUNTRY || a === UNKNOWN_CITY) return 1;
+    if (b === UNKNOWN_COUNTRY || b === UNKNOWN_CITY) return -1;
+    return a.localeCompare(b, "de");
+  };
+  const countries = Array.from(byCountry.keys()).sort(sortAlpha);
+  return countries.map((country) => {
+    const byCity = byCountry.get(country);
+    const cities = Array.from(byCity.keys()).sort(sortAlpha);
+    return {
+      country,
+      cities: cities.map((city) => ({
+        city,
+        items: byCity.get(city).sort((a, b) => a.name.localeCompare(b.name, "de")),
+      })),
+    };
+  });
+}
+
+function renderGroupedDestinations(grouped) {
+  return grouped
+    .map(
+      (g) => `
+      <div class="country-group">
+        <div class="country-heading">${g.country === UNKNOWN_COUNTRY ? "\uD83C\uDFF3\uFE0F" : "\uD83D\uDCCD"} ${escapeHtml(g.country)}</div>
+        ${g.cities
+          .map(
+            (c) => `
+            ${c.city !== UNKNOWN_CITY ? `<div class="city-heading">${escapeHtml(c.city)}</div>` : ""}
+            ${c.items.map((d) => destCardHtml(d, { hideLocation: true })).join("")}
+          `
+          )
+          .join("")}
+      </div>
+    `
+    )
+    .join("");
 }
 
 /* ===========================================================
@@ -570,16 +678,14 @@ function destCardHtml(d) {
 function renderContinentDetail(app, continentKey) {
   const cont = CONTINENTS.find((c) => c.key === continentKey);
   const dests = loadDestinations().filter((d) => d.continent === continentKey);
-
-  // sort: favorites first, then name
-  dests.sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0) || a.name.localeCompare(b.name));
+  const grouped = groupByCountryAndCity(dests);
 
   app.innerHTML = `
     ${topBar(`${cont ? cont.emoji + " " + cont.label : "Kontinent"}`, { back: true })}
     <div class="screen" style="padding-bottom: 100px;">
       ${
         dests.length
-          ? dests.map((d) => destCardHtml(d)).join("")
+          ? renderGroupedDestinations(grouped)
           : `<div class="empty-state"><div class="emoji">${cont ? cont.emoji : "🌍"}</div><p>Noch keine Zielorte in ${cont ? cont.label : ""}.</p></div>`
       }
     </div>
@@ -602,6 +708,7 @@ function renderDestinationForm(app, destId, presetContinent) {
     id: uuid(),
     name: "",
     country: "",
+    city: "",
     continent: presetContinent || "europa",
     iata: "",
     status: "geplant",
@@ -631,9 +738,14 @@ function renderDestinationForm(app, destId, presetContinent) {
             <input class="form-input" id="f-country" placeholder="z. B. Kolumbien" value="${escapeHtml(formState.country)}" />
           </div>
           <div class="form-group">
-            <label class="form-label">IATA-Code *</label>
-            <input class="form-input iata-input" id="f-iata" maxlength="3" placeholder="BOG" value="${escapeHtml(formState.iata)}" />
+            <label class="form-label">Ort/Stadt <span class="optional">(optional)</span></label>
+            <input class="form-input" id="f-city" placeholder="z. B. Bogotá" value="${escapeHtml(formState.city || "")}" />
           </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">IATA-Code *</label>
+          <input class="form-input iata-input" id="f-iata" maxlength="3" placeholder="BOG" value="${escapeHtml(formState.iata)}" />
         </div>
 
         <div class="form-group">
@@ -714,6 +826,7 @@ function renderDestinationForm(app, destId, presetContinent) {
 
     app.querySelector("#f-name").addEventListener("input", (e) => (formState.name = e.target.value));
     app.querySelector("#f-country").addEventListener("input", (e) => (formState.country = e.target.value));
+    app.querySelector("#f-city").addEventListener("input", (e) => (formState.city = e.target.value));
     app.querySelector("#f-iata").addEventListener("input", (e) => {
       e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3);
       formState.iata = e.target.value;
@@ -855,7 +968,7 @@ function renderDestinationDetail(app, destId) {
     })}
     <div class="dest-hero">
       <div class="dest-iata-big">${escapeHtml(d.iata)}</div>
-      <div class="dest-fullname">${escapeHtml(d.name)}${d.country ? ", " + escapeHtml(d.country) : ""}</div>
+      <div class="dest-fullname">${escapeHtml(d.name)}${[d.city, d.country].filter(Boolean).length ? ", " + escapeHtml([d.city, d.country].filter(Boolean).join(", ")) : ""}</div>
       <div class="dest-meta-row">
         <span class="status-pill status-${d.status}">${st.emoji} ${st.label}</span>
         ${d.status === "besucht" && d.rating ? `<span class="dest-stars">${starString(d.rating)}</span>` : ""}
@@ -1367,6 +1480,14 @@ function renderSettings(app) {
       </div>
 
       <div class="settings-section">
+        <h3>🗂️ Land &amp; Stadt ergänzen</h3>
+        <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
+          Füllt Land und Stadt für bereits importierte Zielorte automatisch aus der gespeicherten Adresse auf – keine erneute Internetabfrage nötig. ${dests.filter((d) => !((d.country || "").trim())).length} von ${dests.length} Zielorten fehlt aktuell noch das Land.
+        </p>
+        <button class="btn btn-secondary btn-block" id="btn-backfill-country">Land &amp; Stadt automatisch ergänzen</button>
+      </div>
+
+      <div class="settings-section">
         <h3>💾 Daten-Backup</h3>
         <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
           ${dests.length} Zielort${dests.length === 1 ? "" : "e"} gespeichert. Erstelle regelmäßig ein Backup, da die Daten nur lokal im Browser liegen.
@@ -1396,6 +1517,32 @@ function renderSettings(app) {
     const key = app.querySelector("#s-mapkey").value.trim();
     saveSettings({ ...settings, mapsApiKey: key });
     toast("API-Key gespeichert");
+  });
+
+  app.querySelector("#btn-backfill-country").addEventListener("click", () => {
+    const missing = dests.filter((d) => !((d.country || "").trim()));
+    if (!missing.length) {
+      toast("Alle Zielorte haben bereits ein Land");
+      return;
+    }
+    confirmModal(
+      "Land & Stadt ergänzen?",
+      `Für ${missing.length} Zielort${missing.length === 1 ? "" : "e"} wird Land und Stadt aus der gespeicherten Adresse ermittelt. Das passiert sofort und lokal, ohne Internetverbindung.`,
+      () => {
+        let updated = 0;
+        const all = loadDestinations().map((d) => {
+          if ((d.country || "").trim()) return d;
+          const addressText = (d.notes || "").split(" \u00b7 ").pop() || "";
+          const { country, city } = parseAddressForCountryCity(addressText);
+          if (!country && !city) return d;
+          updated++;
+          return { ...d, country: country || d.country || "", city: city || d.city || "" };
+        });
+        saveDestinations(all);
+        toast(`${updated} Zielort${updated === 1 ? "" : "e"} aktualisiert`);
+        renderSettings(app);
+      }
+    );
   });
 
   app.querySelector("#btn-change-pin").addEventListener("click", () => {
@@ -1484,21 +1631,25 @@ function renderSettings(app) {
         "Orte importieren?",
         `${fresh.length} neue Orte aus Google Maps gefunden${places.length - fresh.length > 0 ? ` (${places.length - fresh.length} bereits vorhanden)` : ""}. Sie werden automatisch nach Kontinent sortiert und als „Besucht“ angelegt – IATA-Code, Status und Details kannst du danach in jedem Zielort ergänzen.`,
         () => {
-          const newDests = fresh.map((p) => ({
-            id: uuid(),
-            name: p.name,
-            country: "",
-            continent: guessContinent(p.lat, p.lng),
-            iata: "---",
-            status: "besucht",
-            rating: 0,
-            favorite: false,
-            notes: p.address || "",
-            photos: [],
-            lat: p.lat,
-            lng: p.lng,
-            categories: {},
-          }));
+          const newDests = fresh.map((p) => {
+            const { country, city } = parseAddressForCountryCity(p.address);
+            return {
+              id: uuid(),
+              name: p.name,
+              country,
+              city,
+              continent: guessContinent(p.lat, p.lng),
+              iata: "---",
+              status: "besucht",
+              rating: 0,
+              favorite: false,
+              notes: p.address || "",
+              photos: [],
+              lat: p.lat,
+              lng: p.lng,
+              categories: {},
+            };
+          });
           saveDestinations(current.concat(newDests));
           toast(`${newDests.length} Orte importiert`);
           renderSettings(app);
@@ -1571,7 +1722,8 @@ function renderSettings(app) {
               newDests.push({
                 id: uuid(),
                 name: resolved.name || r.title,
-                country: "",
+                country: resolved.country || "",
+                city: resolved.city || "",
                 continent: guessContinent(resolved.lat, resolved.lng),
                 iata: "---",
                 status: "geplant",
@@ -1654,7 +1806,8 @@ function renderSettings(app) {
             newDests.push({
               id: uuid(),
               name: (resolved && resolved.name) || "Besuchter Ort",
-              country: "",
+              country: (resolved && resolved.country) || "",
+              city: (resolved && resolved.city) || "",
               continent: guessContinent(v.lat, v.lng),
               iata: "---",
               status: "besucht",

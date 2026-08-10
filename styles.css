@@ -277,6 +277,25 @@ a { color: var(--gold-light); }
   color: var(--text-faint);
   margin: var(--space-5) 0 var(--space-3);
 }
+.country-group { margin-bottom: var(--space-5); }
+.country-heading {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--gold-light);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-2);
+  margin: var(--space-6) 0 var(--space-3);
+}
+.country-group:first-child .country-heading { margin-top: 0; }
+.city-heading {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-faint);
+  margin: var(--space-3) 0 var(--space-2) var(--space-2);
+}
 .continent-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
