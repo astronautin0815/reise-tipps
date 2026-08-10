@@ -323,6 +323,21 @@ function extractCountryCityFromComponents(components) {
   return { country, city };
 }
 
+// Returns true if a segment looks like a postal code, or a state/province
+// abbreviation combined with one (e.g. "10117", "NY 10001", "ON M5V 2A5",
+// "QC H2W 2L5", "SW1A 1AA") rather than an actual city/locality name.
+function looksLikePostalOrAdminSegment(seg) {
+  const compact = seg.replace(/\s+/g, "");
+  if (!compact) return true;
+  if (/^\d+$/.test(compact)) return true; // pure numeric zip code
+  if (compact.length <= 3) return true; // bare state/province abbreviation (e.g. "ON", "QC", "NY")
+  if (!/\d/.test(compact)) return false; // no digits at all -> real place name, keep it
+  // letters+digits combos typical of "state/province + postal code" (US, Canada, UK, ...)
+  if (/^[A-Za-z]{1,3}\d[A-Za-z0-9]{2,7}$/.test(compact)) return true;
+  if (/^\d[A-Za-z0-9]{2,7}$/.test(compact)) return true;
+  return false;
+}
+
 // Best-effort fallback for when addressComponents aren't available: parse the
 // trailing segments of a formatted address string, e.g. "Unter den Linden 1, 10117 Berlin, Deutschland"
 function parseAddressForCountryCity(address) {
@@ -336,7 +351,7 @@ function parseAddressForCountryCity(address) {
   let city = "";
   for (let i = parts.length - 2; i >= 0; i--) {
     let seg = parts[i].replace(/^\d{4,6}\s+/, "");
-    if (/^[A-Za-z]{2}\s*\d{3,6}$/.test(seg) || /^\d+$/.test(seg) || seg.length <= 2) continue;
+    if (looksLikePostalOrAdminSegment(seg)) continue;
     city = seg;
     break;
   }
@@ -1617,7 +1632,7 @@ function renderSettings(app) {
       <div class="settings-section">
         <h3>🗂️ Land &amp; Stadt ergänzen</h3>
         <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
-          Füllt Land und Stadt für bereits importierte Zielorte automatisch aus der gespeicherten Adresse auf – keine erneute Internetabfrage nötig. ${dests.filter((d) => !((d.country || "").trim())).length} von ${dests.length} Zielorten fehlt aktuell noch das Land.
+          Füllt Land und Stadt für bereits importierte Zielorte automatisch aus der gespeicherten Adresse auf und korrigiert dabei auch fälschlich als Stadt erkannte Postleitzahlen (z.\u00a0B. "ON M5V 2A5" statt "Toronto") – keine Internetverbindung nötig.
         </p>
         <button class="btn btn-secondary btn-block" id="btn-backfill-country">Land &amp; Stadt automatisch ergänzen</button>
       </div>
@@ -1663,23 +1678,29 @@ function renderSettings(app) {
   });
 
   app.querySelector("#btn-backfill-country").addEventListener("click", () => {
-    const missing = dests.filter((d) => !((d.country || "").trim()));
-    if (!missing.length) {
-      toast("Alle Zielorte haben bereits ein Land");
+    const needsWork = dests.filter(
+      (d) => !((d.country || "").trim()) || !((d.city || "").trim()) || looksLikePostalOrAdminSegment(d.city || "")
+    );
+    if (!needsWork.length) {
+      toast("Alle Zielorte haben bereits Land & Stadt");
       return;
     }
     confirmModal(
       "Land & Stadt ergänzen?",
-      `Für ${missing.length} Zielort${missing.length === 1 ? "" : "e"} wird Land und Stadt aus der gespeicherten Adresse ermittelt. Das passiert sofort und lokal, ohne Internetverbindung.`,
+      `Für ${needsWork.length} Zielort${needsWork.length === 1 ? "" : "e"} wird Land und Stadt aus der gespeicherten Adresse ermittelt bzw. korrigiert (z.\u00a0B. falsch erkannte Postleitzahlen statt Stadtnamen). Das passiert sofort und lokal, ohne Internetverbindung.`,
       () => {
         let updated = 0;
         const all = loadDestinations().map((d) => {
-          if ((d.country || "").trim()) return d;
+          const cityLooksWrong = looksLikePostalOrAdminSegment(d.city || "");
+          if ((d.country || "").trim() && (d.city || "").trim() && !cityLooksWrong) return d;
           const addressText = (d.notes || "").split(" \u00b7 ").pop() || "";
           const { country, city } = parseAddressForCountryCity(addressText);
           if (!country && !city) return d;
+          const newCountry = country || d.country || "";
+          const newCity = cityLooksWrong ? city || "" : city || d.city || "";
+          if (newCountry === (d.country || "") && newCity === (d.city || "")) return d;
           updated++;
-          return { ...d, country: country || d.country || "", city: city || d.city || "" };
+          return { ...d, country: newCountry, city: newCity };
         });
         saveDestinations(all);
         toast(`${updated} Zielort${updated === 1 ? "" : "e"} aktualisiert`);
