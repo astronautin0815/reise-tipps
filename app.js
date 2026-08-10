@@ -109,6 +109,118 @@ function uuid() {
   return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
 }
 
+// --- Automatische Kategorie-Zuordnung ("Kategorie-Badge") ---
+
+// Google Places Typen (types-Feld) -> unsere Kategorie-Keys. Reihenfolge = Priorität.
+const GOOGLE_TYPE_TO_CATEGORY = [
+  ["cafe", "restaurants"],
+  ["coffee_shop", "restaurants"],
+  ["bar", "restaurants"],
+  ["restaurant", "restaurants"],
+  ["meal_takeaway", "restaurants"],
+  ["meal_delivery", "restaurants"],
+  ["bakery", "restaurants"],
+  ["spa", "wellness"],
+  ["beauty_salon", "wellness"],
+  ["hair_care", "wellness"],
+  ["massage", "wellness"],
+  ["gym", "sport"],
+  ["fitness_center", "sport"],
+  ["stadium", "sport"],
+  ["sports_complex", "sport"],
+  ["golf_course", "sport"],
+  ["ski_resort", "sport"],
+  ["swimming_pool", "sport"],
+  ["bowling_alley", "sport"],
+  ["zoo", "sightseeing"],
+  ["aquarium", "sightseeing"],
+  ["amusement_park", "sightseeing"],
+  ["tourist_attraction", "sightseeing"],
+  ["natural_feature", "sightseeing"],
+  ["park", "sightseeing"],
+  ["landmark", "sightseeing"],
+  ["shopping_mall", "shopping"],
+  ["department_store", "shopping"],
+  ["clothing_store", "shopping"],
+  ["jewelry_store", "shopping"],
+  ["shoe_store", "shopping"],
+  ["book_store", "shopping"],
+  ["electronics_store", "shopping"],
+  ["furniture_store", "shopping"],
+  ["home_goods_store", "shopping"],
+  ["gift_shop", "shopping"],
+  ["supermarket", "lebensmittel"],
+  ["grocery_or_supermarket", "lebensmittel"],
+  ["convenience_store", "lebensmittel"],
+  ["liquor_store", "lebensmittel"],
+  ["market", "lebensmittel"],
+  ["airport", "transport"],
+  ["train_station", "transport"],
+  ["subway_station", "transport"],
+  ["light_rail_station", "transport"],
+  ["bus_station", "transport"],
+  ["transit_station", "transport"],
+  ["parking", "transport"],
+  ["taxi_stand", "transport"],
+  ["car_rental", "transport"],
+  ["ferry_terminal", "transport"],
+  ["night_club", "nachtleben"],
+  ["casino", "nachtleben"],
+  ["museum", "kultur"],
+  ["art_gallery", "kultur"],
+  ["theater", "kultur"],
+  ["movie_theater", "kultur"],
+  ["library", "kultur"],
+  ["church", "kultur"],
+  ["hindu_temple", "kultur"],
+  ["mosque", "kultur"],
+  ["synagogue", "kultur"],
+  ["place_of_worship", "kultur"],
+  ["hotel", "info"],
+  ["lodging", "info"],
+  ["embassy", "info"],
+  ["city_hall", "info"],
+  ["courthouse", "info"],
+  ["post_office", "info"],
+  ["pharmacy", "info"],
+  ["hospital", "info"],
+  ["bank", "info"],
+  ["atm", "info"],
+  ["police", "info"],
+  ["local_government_office", "info"],
+  ["tourist_information_center", "info"],
+];
+
+function mapGoogleTypesToCategory(types) {
+  if (!types || !types.length) return "";
+  for (const [type, catKey] of GOOGLE_TYPE_TO_CATEGORY) {
+    if (types.includes(type)) return catKey;
+  }
+  return "";
+}
+
+// Stichwort-Erkennung im Namen (funktioniert lokal, ohne API-Aufruf)
+const CATEGORY_NAME_PATTERNS = [
+  ["restaurants", /restaurant|bistro|trattoria|pizzeria|steakhouse|grill|caf[eé]|coffee|\bbar\b|pub\b|brauerei|b[aä]ckerei|bakery|diner|k[uü]che|osteria|ristorante|imbiss|sushi|noodle|burger/i],
+  ["wellness", /\bspa\b|wellness|massage|beauty|friseur|hair\s?salon|\bsalon\b|nagelstudio|therme|sauna/i],
+  ["sport", /fitness|\bgym\b|yoga|crossfit|stadion|stadium|sportplatz|\bgolf\b|\bski\b|schwimmbad|\bpool\b|bowling/i],
+  ["sightseeing", /aussicht|viewpoint|denkmal|monument|wahrzeichen|landmark|sehensw[uü]rdigkeit|\btower\b|\bturm\b|bridge|br[uü]cke|\bzoo\b|aquarium|vergn[uü]gungspark|amusement\s?park|nationalpark|national\s?park/i],
+  ["shopping", /\bmall\b|einkaufszentrum|shopping|boutique|\bstore\b|gesch[aä]ft|outlet/i],
+  ["lebensmittel", /supermarkt|supermarket|\bedeka\b|\brewe\b|\baldi\b|\blidl\b|kaufland|\bspar\b|grocery|feinkost|metzgerei|\bmarkt\b(?!platz)/i],
+  ["transport", /flughafen|airport|bahnhof|\bstation\b|u-bahn|s-bahn|subway|bus\s?stop|haltestelle|parkhaus|\bparking\b|f[aä]hre|\bferry\b/i],
+  ["nachtleben", /\bclub\b|nightclub|\bdisco\b|casino|lounge/i],
+  ["kultur", /museum|galerie|\bgallery\b|theater|theatre|kirche|\bchurch\b|\bdom\b|kathedrale|cathedral|tempel|temple|moschee|mosque|synagoge|synagogue|bibliothek|\blibrary\b|\bkino\b|cinema/i],
+  ["info", /rathaus|city\s?hall|botschaft|embassy|krankenhaus|hospital|apotheke|pharmacy|\bbank\b|\bpost\b|polizei|\bpolice\b|touristeninformation|tourist\s?information/i],
+];
+
+function guessCategoryFromName(name) {
+  if (!name) return "";
+  for (const [catKey, pattern] of CATEGORY_NAME_PATTERNS) {
+    if (pattern.test(name)) return catKey;
+  }
+  return "";
+}
+
 // --- Google "Gespeichert"-Listen (CSV) ---
 function parseCsvRows(text) {
   const rows = [];
@@ -235,7 +347,7 @@ async function resolvePlaceByText(query, locationBias) {
   try {
     const request = {
       textQuery: query,
-      fields: ["displayName", "formattedAddress", "location", "addressComponents"],
+      fields: ["displayName", "formattedAddress", "location", "addressComponents", "types"],
       maxResultCount: 1,
     };
     if (locationBias) request.locationBias = locationBias;
@@ -255,6 +367,8 @@ async function resolvePlaceByText(query, locationBias) {
         lng: p.location.lng(),
         country,
         city,
+        types: p.types || [],
+        category: mapGoogleTypesToCategory(p.types),
       };
     }
   } catch (err) {
@@ -266,7 +380,7 @@ async function resolvePlaceByText(query, locationBias) {
 async function resolvePlaceById(placeId) {
   try {
     const place = new google.maps.places.Place({ id: placeId });
-    await place.fetchFields({ fields: ["displayName", "formattedAddress", "location", "addressComponents"] });
+    await place.fetchFields({ fields: ["displayName", "formattedAddress", "location", "addressComponents", "types"] });
     if (!place.location) return null;
     let { country, city } = extractCountryCityFromComponents(place.addressComponents);
     if (!country && !city) {
@@ -281,6 +395,8 @@ async function resolvePlaceById(placeId) {
       lng: place.location.lng(),
       country,
       city,
+      types: place.types || [],
+      category: mapGoogleTypesToCategory(place.types),
     };
   } catch (err) {
     console.error("Place-Details fehlgeschlagen", placeId, err);
@@ -605,6 +721,7 @@ function destCardHtml(d, opts) {
   const st = STATUS[d.status] || STATUS.geplant;
   const continentLabel = (CONTINENTS.find((c) => c.key === d.continent) || {}).label || "";
   const locationLabel = [d.city, d.country].filter(Boolean).join(", ") || continentLabel;
+  const cat = d.category ? CATEGORIES.find((c) => c.key === d.category) : null;
   return `
     <div class="dest-card" data-dest-id="${d.id}">
       <div class="dest-iata">${escapeHtml(d.iata)}</div>
@@ -612,6 +729,7 @@ function destCardHtml(d, opts) {
         <div class="dest-name">${escapeHtml(d.name)}${d.favorite ? ' <span class="dest-fav">★</span>' : ""}</div>
         <div class="dest-sub">
           <span class="status-pill status-${d.status}">${st.emoji} ${st.label}</span>
+          ${cat ? `<span class="category-pill">${cat.emoji} ${cat.label}</span>` : ""}
           ${d.status === "besucht" && d.rating ? `<span class="dest-stars">${starString(d.rating)}</span>` : ""}
           ${!opts.hideLocation && locationLabel ? `<span>${escapeHtml(locationLabel)}</span>` : ""}
         </div>
@@ -709,6 +827,7 @@ function renderDestinationForm(app, destId, presetContinent) {
     name: "",
     country: "",
     city: "",
+    category: "",
     continent: presetContinent || "europa",
     iata: "",
     status: "geplant",
@@ -753,6 +872,16 @@ function renderDestinationForm(app, destId, presetContinent) {
           <div class="chip-row" id="f-continent">
             ${CONTINENTS.map(
               (c) => `<div class="chip ${formState.continent === c.key ? "active" : ""}" data-c="${c.key}">${c.emoji} ${c.label}</div>`
+            ).join("")}
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Kategorie <span class="optional">(optional)</span></label>
+          <div class="chip-row" id="f-category">
+            <div class="chip ${!formState.category ? "active" : ""}" data-cat="">– Keine –</div>
+            ${CATEGORIES.map(
+              (c) => `<div class="chip ${formState.category === c.key ? "active" : ""}" data-cat="${c.key}">${c.emoji} ${c.label}</div>`
             ).join("")}
           </div>
         </div>
@@ -834,6 +963,12 @@ function renderDestinationForm(app, destId, presetContinent) {
     app.querySelectorAll("#f-continent .chip").forEach((el) => {
       el.addEventListener("click", () => {
         formState.continent = el.dataset.c;
+        renderForm();
+      });
+    });
+    app.querySelectorAll("#f-category .chip").forEach((el) => {
+      el.addEventListener("click", () => {
+        formState.category = el.dataset.cat;
         renderForm();
       });
     });
@@ -1488,6 +1623,14 @@ function renderSettings(app) {
       </div>
 
       <div class="settings-section">
+        <h3>🏷️ Kategorien zuordnen</h3>
+        <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
+          Ordnet jedem Zielort automatisch eine Kategorie zu (🍽️ Restaurants, 🏛️ Sightseeing, 🛍️ Shopping, …) – zuerst per Namenserkennung, danach optional per Google-Places-Abfrage für den Rest. ${dests.filter((d) => !((d.category || "").trim())).length} von ${dests.length} Zielorten haben noch keine Kategorie.
+        </p>
+        <button class="btn btn-secondary btn-block" id="btn-assign-categories">Kategorien automatisch zuordnen</button>
+      </div>
+
+      <div class="settings-section">
         <h3>💾 Daten-Backup</h3>
         <p style="color:var(--text-faint); font-size:0.8rem; margin-bottom:12px;">
           ${dests.length} Zielort${dests.length === 1 ? "" : "e"} gespeichert. Erstelle regelmäßig ein Backup, da die Daten nur lokal im Browser liegen.
@@ -1541,6 +1684,72 @@ function renderSettings(app) {
         saveDestinations(all);
         toast(`${updated} Zielort${updated === 1 ? "" : "e"} aktualisiert`);
         renderSettings(app);
+      }
+    );
+  });
+
+  app.querySelector("#btn-assign-categories").addEventListener("click", () => {
+    const missing = dests.filter((d) => !((d.category || "").trim()));
+    if (!missing.length) {
+      toast("Alle Zielorte haben bereits eine Kategorie");
+      return;
+    }
+    confirmModal(
+      "Kategorien zuordnen?",
+      `Für ${missing.length} Zielort${missing.length === 1 ? "" : "e"} wird zuerst per Namenserkennung (sofort, lokal) eine Kategorie geraten. Für Orte, bei denen das nicht klappt, kannst du danach optional eine genauere Abfrage bei Google Places starten (kann ein paar Minuten dauern).`,
+      async () => {
+        let all = loadDestinations();
+        let heuristicCount = 0;
+        all = all.map((d) => {
+          if ((d.category || "").trim()) return d;
+          const guess = guessCategoryFromName(d.name);
+          if (!guess) return d;
+          heuristicCount++;
+          return { ...d, category: guess };
+        });
+        saveDestinations(all);
+        toast(`${heuristicCount} Zielort${heuristicCount === 1 ? "" : "e"} per Namenserkennung zugeordnet`);
+        renderSettings(app);
+
+        const currentSettings = loadSettings();
+        const stillMissing = all.filter((d) => !((d.category || "").trim()) && (d.lat || d.lng));
+        if (!stillMissing.length || !currentSettings.mapsApiKey) {
+          return;
+        }
+        confirmModal(
+          "Bei Google nachfragen?",
+          `${stillMissing.length} Zielort${stillMissing.length === 1 ? "" : "e"} konnten nicht automatisch erkannt werden. Jetzt einzeln bei der Google Places API nachfragen? Das kann mehrere Minuten dauern und ggf. geringe Kosten verursachen.`,
+          async () => {
+            const overlay = importProgressOverlay("Kategorien werden bei Google ermittelt …");
+            try {
+              await loadGoogleMaps(currentSettings.mapsApiKey);
+            } catch (err) {
+              overlay.close();
+              toast("Google Maps konnte nicht geladen werden – bitte API-Key prüfen");
+              return;
+            }
+            let apiCount = 0;
+            let done = 0;
+            const latest = loadDestinations();
+            for (const d of stillMissing) {
+              overlay.update(done, stillMissing.length);
+              const query = [d.name, d.city, d.country].filter(Boolean).join(", ");
+              const resolved = await resolvePlaceByText(query);
+              if (resolved && resolved.category) {
+                const idx = latest.findIndex((x) => x.id === d.id);
+                if (idx >= 0) {
+                  latest[idx] = { ...latest[idx], category: resolved.category };
+                  apiCount++;
+                }
+              }
+              done++;
+            }
+            saveDestinations(latest);
+            overlay.close();
+            toast(`${apiCount} weitere Zielort${apiCount === 1 ? "" : "e"} über Google zugeordnet`);
+            renderSettings(app);
+          }
+        );
       }
     );
   });
@@ -1638,6 +1847,7 @@ function renderSettings(app) {
               name: p.name,
               country,
               city,
+              category: guessCategoryFromName(p.name),
               continent: guessContinent(p.lat, p.lng),
               iata: "---",
               status: "besucht",
@@ -1724,6 +1934,7 @@ function renderSettings(app) {
                 name: resolved.name || r.title,
                 country: resolved.country || "",
                 city: resolved.city || "",
+                category: resolved.category || guessCategoryFromName(r.listName) || guessCategoryFromName(resolved.name || r.title) || "",
                 continent: guessContinent(resolved.lat, resolved.lng),
                 iata: "---",
                 status: "geplant",
@@ -1808,6 +2019,7 @@ function renderSettings(app) {
               name: (resolved && resolved.name) || "Besuchter Ort",
               country: (resolved && resolved.country) || "",
               city: (resolved && resolved.city) || "",
+              category: (resolved && (resolved.category || guessCategoryFromName(resolved.name))) || "",
               continent: guessContinent(v.lat, v.lng),
               iata: "---",
               status: "besucht",

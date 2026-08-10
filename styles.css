@@ -364,6 +364,19 @@ a { color: var(--gold-light); }
 .status-geplant { background: rgba(107,164,217,0.15); color: var(--info); }
 .status-keinInteresse { background: rgba(224,104,90,0.12); color: var(--danger); }
 
+.category-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--gold-dim);
+  color: var(--gold-light);
+}
+
 .empty-state {
   text-align: center;
   padding: var(--space-7) var(--space-4);
