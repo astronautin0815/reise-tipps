@@ -203,14 +203,14 @@ function mapGoogleTypesToCategory(types) {
 const CATEGORY_NAME_PATTERNS = [
   ["restaurants", /restaurant|bistro|trattoria|pizzeria|steakhouse|grill|caf[eé]|coffee|\bbar\b|pub\b|brauerei|b[aä]ckerei|bakery|diner|k[uü]che|osteria|ristorante|imbiss|sushi|noodle|burger/i],
   ["wellness", /\bspa\b|wellness|massage|beauty|friseur|hair\s?salon|\bsalon\b|nagelstudio|therme|sauna/i],
-  ["sport", /fitness|\bgym\b|yoga|crossfit|stadion|stadium|sportplatz|\bgolf\b|\bski\b|schwimmbad|\bpool\b|bowling/i],
+  ["sport", /fitness|\bgym\b|yoga|crossfit|stadion|stadium|sportplatz|\bgolf\b|\bski\b|schwimmbad|\bpool\b|bowling|yacht|ruderclub|rudern|segelclub|\bsegeln\b|\bkanu\b|kajak|tauchclub|tauchen|angelverein|reitverein|reitschule|\bmarina\b|\bcamping\b|wohnmobil|tennisclub|golfclub/i],
   ["sightseeing", /aussicht|viewpoint|denkmal|monument|wahrzeichen|landmark|sehensw[uü]rdigkeit|\btower\b|\bturm\b|bridge|br[uü]cke|\bzoo\b|aquarium|vergn[uü]gungspark|amusement\s?park|nationalpark|national\s?park/i],
   ["shopping", /\bmall\b|einkaufszentrum|shopping|boutique|\bstore\b|gesch[aä]ft|outlet/i],
   ["lebensmittel", /supermarkt|supermarket|\bedeka\b|\brewe\b|\baldi\b|\blidl\b|kaufland|\bspar\b|grocery|feinkost|metzgerei|\bmarkt\b(?!platz)/i],
   ["transport", /flughafen|airport|bahnhof|\bstation\b|u-bahn|s-bahn|subway|bus\s?stop|haltestelle|parkhaus|\bparking\b|f[aä]hre|\bferry\b/i],
-  ["nachtleben", /\bclub\b|nightclub|\bdisco\b|casino|lounge/i],
+  ["nachtleben", /nightclub|night\s?club|nachtclub|\bdisco(?:thek)?\b|casino|\blounge\b/i],
   ["kultur", /museum|galerie|\bgallery\b|theater|theatre|kirche|\bchurch\b|\bdom\b|kathedrale|cathedral|tempel|temple|moschee|mosque|synagoge|synagogue|bibliothek|\blibrary\b|\bkino\b|cinema/i],
-  ["info", /rathaus|city\s?hall|botschaft|embassy|krankenhaus|hospital|apotheke|pharmacy|\bbank\b|\bpost\b|polizei|\bpolice\b|touristeninformation|tourist\s?information/i],
+  ["info", /rathaus|city\s?hall|botschaft|embassy|krankenhaus|hospital|apotheke|pharmacy|\bbank\b|\bpost\b|polizei|\bpolice\b|touristeninformation|tourist\s?information|gesundheitszentrum|arztpraxis|\bpraxis\b|\bklinik\b/i],
 ];
 
 function guessCategoryFromName(name) {
@@ -306,6 +306,20 @@ function parseTimelineVisits(text) {
 }
 
 // --- Places API Auflösung (client-seitig, nutzt den in den Einstellungen gespeicherten Key) ---
+// Removes borough/district suffixes that Google sometimes attaches to a
+// city name (e.g. German city-states split into "Bezirke"), so we always
+// group by the actual city rather than its internal districts.
+// "Berlin-Bezirk Spandau" -> "Berlin", "Darmstadt-Ost" -> "Darmstadt".
+function stripDistrictSuffix(city) {
+  if (!city) return city;
+  let out = city.replace(/[\s-]+Bezirk\b.*$/i, "").trim();
+  out = out.replace(
+    /[\s-]+(Nord(?:ost|west)?|S[üu]d(?:ost|west)?|Ost|West|Mitte|Zentrum|Altstadt|Neustadt|Innenstadt)$/i,
+    ""
+  ).trim();
+  return out || city;
+}
+
 function extractCountryCityFromComponents(components) {
   if (!components || !components.length) return { country: "", city: "" };
   const find = (type) => {
@@ -313,13 +327,14 @@ function extractCountryCityFromComponents(components) {
     return c ? c.longText || c.long_name || "" : "";
   };
   const country = find("country");
-  const city =
+  let city =
     find("locality") ||
     find("postal_town") ||
     find("sublocality") ||
     find("administrative_area_level_2") ||
     find("administrative_area_level_1") ||
     "";
+  city = stripDistrictSuffix(city);
   return { country, city };
 }
 
@@ -352,7 +367,7 @@ function parseAddressForCountryCity(address) {
   for (let i = parts.length - 2; i >= 0; i--) {
     let seg = parts[i].replace(/^\d{4,6}\s+/, "");
     if (looksLikePostalOrAdminSegment(seg)) continue;
-    city = seg;
+    city = stripDistrictSuffix(seg);
     break;
   }
   return { country, city };
@@ -1827,9 +1842,16 @@ function renderSettings(app) {
     toast("API-Key gespeichert");
   });
 
+  const cityNeedsRepair = (city) => {
+    const c = (city || "").trim();
+    if (!c) return true;
+    if (looksLikePostalOrAdminSegment(c)) return true;
+    if (stripDistrictSuffix(c) !== c) return true; // e.g. "Berlin-Bezirk Spandau", "Darmstadt-Ost"
+    return false;
+  };
   app.querySelector("#btn-backfill-country").addEventListener("click", () => {
     const needsWork = dests.filter(
-      (d) => !((d.country || "").trim()) || !((d.city || "").trim()) || looksLikePostalOrAdminSegment(d.city || "")
+      (d) => !((d.country || "").trim()) || cityNeedsRepair(d.city || "")
     );
     if (!needsWork.length) {
       toast("Alle Zielorte haben bereits Land & Stadt");
@@ -1837,14 +1859,20 @@ function renderSettings(app) {
     }
     confirmModal(
       "Land & Stadt ergänzen?",
-      `Für ${needsWork.length} Zielort${needsWork.length === 1 ? "" : "e"} wird Land und Stadt aus der gespeicherten Adresse ermittelt bzw. korrigiert (z.\u00a0B. falsch erkannte Postleitzahlen statt Stadtnamen). Das passiert sofort und lokal, ohne Internetverbindung.`,
+      `Für ${needsWork.length} Zielort${needsWork.length === 1 ? "" : "e"} wird Land und Stadt aus der gespeicherten Adresse ermittelt bzw. korrigiert (z.\u00a0B. falsch erkannte Postleitzahlen oder Bezirke statt Stadtnamen). Das passiert sofort und lokal, ohne Internetverbindung.`,
       () => {
         let updated = 0;
         const all = loadDestinations().map((d) => {
-          const cityLooksWrong = looksLikePostalOrAdminSegment(d.city || "");
+          const cityLooksWrong = cityNeedsRepair(d.city || "");
           if ((d.country || "").trim() && (d.city || "").trim() && !cityLooksWrong) return d;
           const addressText = (d.notes || "").split(" \u00b7 ").pop() || "";
-          const { country, city } = parseAddressForCountryCity(addressText);
+          const parsed = parseAddressForCountryCity(addressText);
+          const country = parsed.country;
+          let city = parsed.city;
+          if (!city && cityLooksWrong && (d.city || "").trim()) {
+            const stripped = stripDistrictSuffix(d.city.trim());
+            if (stripped && stripped !== d.city.trim()) city = stripped;
+          }
           if (!country && !city) return d;
           const newCountry = country || d.country || "";
           const newCity = cityLooksWrong ? city || "" : city || d.city || "";
