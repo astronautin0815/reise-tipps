@@ -731,15 +731,24 @@ function renderHome(app) {
   });
 }
 
+function iataOrIconFor(d) {
+  if (d.iata && d.iata.trim() && d.iata.trim() !== "---") {
+    return { text: d.iata.trim(), isIcon: false };
+  }
+  const cat = d.category ? CATEGORIES.find((c) => c.key === d.category) : null;
+  return { text: cat ? cat.emoji : "\uD83D\uDCCD", isIcon: true };
+}
+
 function destCardHtml(d, opts) {
   opts = opts || {};
   const st = STATUS[d.status] || STATUS.geplant;
   const continentLabel = (CONTINENTS.find((c) => c.key === d.continent) || {}).label || "";
   const locationLabel = [d.city, d.country].filter(Boolean).join(", ") || continentLabel;
   const cat = d.category ? CATEGORIES.find((c) => c.key === d.category) : null;
+  const iataBox = iataOrIconFor(d);
   return `
     <div class="dest-card" data-dest-id="${d.id}">
-      <div class="dest-iata">${escapeHtml(d.iata)}</div>
+      <div class="dest-iata${iataBox.isIcon ? " icon-mode" : ""}">${escapeHtml(iataBox.text)}</div>
       <div class="dest-info">
         <div class="dest-name">${escapeHtml(d.name)}${d.favorite ? ' <span class="dest-fav">★</span>' : ""}</div>
         <div class="dest-sub">
@@ -755,6 +764,147 @@ function destCardHtml(d, opts) {
 
 const UNKNOWN_COUNTRY = "Unbekanntes Land";
 const UNKNOWN_CITY = "Weitere Orte";
+
+// Maps country names (as returned by Google Places, mostly German, some English/French)
+// to their ISO 3166-1 alpha-2 code so we can render a flag emoji.
+const COUNTRY_NAME_TO_ISO2 = {
+  "Deutschland": "DE", "Germany": "DE",
+  "Österreich": "AT", "Austria": "AT",
+  "Schweiz": "CH", "Switzerland": "CH", "Suisse": "CH",
+  "Vereinigte Staaten": "US", "Vereinigte Staaten von Amerika": "US", "USA": "US", "United States": "US",
+  "Kanada": "CA", "Canada": "CA",
+  "Kuba": "CU", "Cuba": "CU",
+  "Mexiko": "MX", "Mexico": "MX",
+  "Vereinigtes Königreich": "GB", "Großbritannien": "GB", "United Kingdom": "GB",
+  "Frankreich": "FR", "France": "FR",
+  "Italien": "IT", "Italy": "IT", "Italia": "IT",
+  "Spanien": "ES", "Spain": "ES", "España": "ES",
+  "Portugal": "PT",
+  "Niederlande": "NL", "Netherlands": "NL",
+  "Belgien": "BE", "Belgium": "BE",
+  "Griechenland": "GR", "Greece": "GR",
+  "Türkei": "TR", "Turkey": "TR", "Türkiye": "TR",
+  "Japan": "JP",
+  "China": "CN",
+  "Südkorea": "KR", "South Korea": "KR",
+  "Thailand": "TH",
+  "Vietnam": "VN",
+  "Indonesien": "ID", "Indonesia": "ID",
+  "Indien": "IN", "India": "IN",
+  "Australien": "AU", "Australia": "AU",
+  "Neuseeland": "NZ", "New Zealand": "NZ",
+  "Brasilien": "BR", "Brazil": "BR",
+  "Argentinien": "AR", "Argentina": "AR",
+  "Chile": "CL",
+  "Peru": "PE",
+  "Bolivien": "BO", "Bolivia": "BO",
+  "Kolumbien": "CO", "Colombia": "CO",
+  "Ecuador": "EC",
+  "Uruguay": "UY",
+  "Paraguay": "PY",
+  "Venezuela": "VE",
+  "Südafrika": "ZA", "South Africa": "ZA",
+  "Ägypten": "EG", "Egypt": "EG",
+  "Marokko": "MA", "Morocco": "MA",
+  "Kenia": "KE", "Kenya": "KE",
+  "Tansania": "TZ", "Tanzania": "TZ",
+  "Vereinigte Arabische Emirate": "AE", "United Arab Emirates": "AE",
+  "Katar": "QA", "Qatar": "QA",
+  "Saudi-Arabien": "SA", "Saudi Arabia": "SA",
+  "Israel": "IL",
+  "Jordanien": "JO", "Jordan": "JO",
+  "Russland": "RU", "Russia": "RU",
+  "Polen": "PL", "Poland": "PL",
+  "Tschechien": "CZ", "Czechia": "CZ",
+  "Ungarn": "HU", "Hungary": "HU",
+  "Kroatien": "HR", "Croatia": "HR",
+  "Slowenien": "SI", "Slovenia": "SI",
+  "Schweden": "SE", "Sweden": "SE",
+  "Norwegen": "NO", "Norway": "NO",
+  "Dänemark": "DK", "Denmark": "DK",
+  "Finnland": "FI", "Finland": "FI",
+  "Island": "IS", "Iceland": "IS",
+  "Irland": "IE", "Ireland": "IE",
+  "Malta": "MT",
+  "Zypern": "CY", "Cyprus": "CY",
+  "Rumänien": "RO", "Romania": "RO",
+  "Bulgarien": "BG", "Bulgaria": "BG",
+  "Serbien": "RS", "Serbia": "RS",
+  "Montenegro": "ME",
+  "Albanien": "AL", "Albania": "AL",
+  "Slowakei": "SK", "Slovakia": "SK",
+  "Litauen": "LT", "Lithuania": "LT",
+  "Lettland": "LV", "Latvia": "LV",
+  "Estland": "EE", "Estonia": "EE",
+  "Malediven": "MV", "Maldives": "MV",
+  "Sri Lanka": "LK",
+  "Nepal": "NP",
+  "Malaysia": "MY",
+  "Singapur": "SG", "Singapore": "SG",
+  "Philippinen": "PH", "Philippines": "PH",
+  "Kambodscha": "KH", "Cambodia": "KH",
+  "Laos": "LA",
+  "Myanmar": "MM",
+  "Georgien": "GE", "Georgia": "GE",
+  "Armenien": "AM", "Armenia": "AM",
+  "Aserbaidschan": "AZ", "Azerbaijan": "AZ",
+  "Costa Rica": "CR",
+  "Panama": "PA",
+  "Jamaika": "JM", "Jamaica": "JM",
+  "Dominikanische Republik": "DO", "Dominican Republic": "DO",
+  "Bahamas": "BS",
+  "Fidschi": "FJ", "Fiji": "FJ",
+  "Tunesien": "TN", "Tunisia": "TN",
+  "Namibia": "NA",
+  "Botswana": "BW",
+  "Simbabwe": "ZW", "Zimbabwe": "ZW",
+  "Mauritius": "MU",
+  "Seychellen": "SC", "Seychelles": "SC",
+  "Oman": "OM",
+  "Kuwait": "KW",
+  "Bahrain": "BH",
+  "Libanon": "LB", "Lebanon": "LB",
+  "Luxemburg": "LU", "Luxembourg": "LU",
+  "Monaco": "MC",
+  "Andorra": "AD",
+  "Liechtenstein": "LI",
+  "San Marino": "SM",
+  "Vatikanstadt": "VA", "Vatican City": "VA",
+  "Grönland": "GL", "Greenland": "GL",
+  "Bangladesch": "BD", "Bangladesh": "BD",
+  "Pakistan": "PK",
+  "Afghanistan": "AF",
+  "Kasachstan": "KZ", "Kazakhstan": "KZ",
+  "Usbekistan": "UZ", "Uzbekistan": "UZ",
+  "Mongolei": "MN", "Mongolia": "MN",
+  "Nordkorea": "KP", "North Korea": "KP",
+  "Taiwan": "TW",
+  "Hongkong": "HK", "Hong Kong": "HK",
+  "Macau": "MO", "Macao": "MO",
+  "Guatemala": "GT",
+  "Honduras": "HN",
+  "Nicaragua": "NI",
+  "El Salvador": "SV",
+  "Belize": "BZ",
+  "Ghana": "GH",
+  "Nigeria": "NG",
+  "Äthiopien": "ET", "Ethiopia": "ET",
+  "Uganda": "UG",
+  "Ruanda": "RW", "Rwanda": "RW",
+  "Sambia": "ZM", "Zambia": "ZM",
+  "Mosambik": "MZ", "Mozambique": "MZ",
+  "Senegal": "SN",
+  "Elfenbeinküste": "CI", "Ivory Coast": "CI",
+  "Algerien": "DZ", "Algeria": "DZ",
+  "Libyen": "LY", "Libya": "LY",
+};
+
+function countryFlagEmoji(countryName) {
+  const iso = COUNTRY_NAME_TO_ISO2[(countryName || "").trim()];
+  if (!iso) return "";
+  const points = [...iso.toUpperCase()].map((c) => 0x1f1e6 + (c.charCodeAt(0) - 65));
+  return String.fromCodePoint(...points);
+}
 
 function groupByCountryAndCity(dests) {
   const byCountry = new Map();
@@ -790,11 +940,11 @@ function renderGroupedDestinations(grouped) {
     .map(
       (g) => `
       <div class="country-group">
-        <div class="country-heading">${g.country === UNKNOWN_COUNTRY ? "\uD83C\uDFF3\uFE0F" : "\uD83D\uDCCD"} ${escapeHtml(g.country)}</div>
+        <div class="country-heading">${g.country === UNKNOWN_COUNTRY ? "\uD83C\uDFF3\uFE0F" : countryFlagEmoji(g.country) || "\uD83D\uDCCD"} ${escapeHtml(g.country)}</div>
         ${g.cities
           .map(
             (c) => `
-            ${c.city !== UNKNOWN_CITY ? `<div class="city-heading">${escapeHtml(c.city)}</div>` : ""}
+            ${c.city !== UNKNOWN_CITY ? `<div class="city-heading">\uD83C\uDFD9\uFE0F ${escapeHtml(c.city)}</div>` : ""}
             ${c.items.map((d) => destCardHtml(d, { hideLocation: true })).join("")}
           `
           )
@@ -1117,7 +1267,7 @@ function renderDestinationDetail(app, destId) {
       right: `<button class="icon-btn" id="btn-edit" aria-label="Bearbeiten">✎</button>`,
     })}
     <div class="dest-hero">
-      <div class="dest-iata-big">${escapeHtml(d.iata)}</div>
+      <div class="dest-iata-big${iataOrIconFor(d).isIcon ? " icon-mode" : ""}">${escapeHtml(iataOrIconFor(d).text)}</div>
       <div class="dest-fullname">${escapeHtml(d.name)}${[d.city, d.country].filter(Boolean).length ? ", " + escapeHtml([d.city, d.country].filter(Boolean).join(", ")) : ""}</div>
       <div class="dest-meta-row">
         <span class="status-pill status-${d.status}">${st.emoji} ${st.label}</span>
@@ -1165,7 +1315,7 @@ function renderCategoryList(app, destId, catKey) {
   app.innerHTML = `
     ${topBar(`${cat.emoji} ${cat.label}`, { back: true })}
     <div class="screen" style="padding-bottom:100px;">
-      <div style="color:var(--text-faint); font-size:0.82rem; margin-bottom:16px;">${escapeHtml(d.iata)} · ${escapeHtml(d.name)}</div>
+      <div style="color:var(--text-faint); font-size:0.82rem; margin-bottom:16px;">${d.iata && d.iata.trim() && d.iata.trim() !== "---" ? escapeHtml(d.iata) + " · " : ""}${escapeHtml(d.name)}</div>
       ${
         entries.length
           ? entries.map((e) => entryCardHtml(e)).join("")
