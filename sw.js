@@ -1,4 +1,4 @@
-const CACHE_NAME = "reise-tipps-v3";
+const CACHE_NAME = "reise-tipps-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -48,7 +48,7 @@ self.addEventListener("fetch", (event) => {
 
   if (isNetworkFirst(req.url)) {
     event.respondWith(
-      fetch(req)
+      fetch(req, { cache: "no-store" })
         .then((res) => {
           if (res && res.status === 200 && res.type === "basic") {
             const resClone = res.clone();
