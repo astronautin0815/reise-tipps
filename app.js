@@ -500,6 +500,13 @@ function navigate(hash) {
   window.location.hash = hash;
 }
 
+// Replaces the current history entry instead of pushing a new one — used after
+// a save/delete action so pressing "back" doesn't return to the form/edit screen.
+function navigateReplace(hash) {
+  history.replaceState(null, "", hash);
+  router();
+}
+
 function parseHash() {
   const h = window.location.hash.replace(/^#\/?/, "");
   return h.split("/").filter(Boolean);
@@ -524,6 +531,8 @@ function router() {
   else if (view === "category") renderCategoryList(app, decodeURIComponent(parts[1]), decodeURIComponent(parts[2]));
   else if (view === "entry-new") renderEntryForm(app, decodeURIComponent(parts[1]), decodeURIComponent(parts[2]));
   else if (view === "entry-edit") renderEntryForm(app, decodeURIComponent(parts[1]), decodeURIComponent(parts[2]), decodeURIComponent(parts[3]));
+  else if (view === "city") renderCityDetail(app, decodeURIComponent(parts[1] || ""), decodeURIComponent(parts[2] || ""), decodeURIComponent(parts[3] || ""));
+  else if (view === "city-cat") renderCityCategoryList(app, decodeURIComponent(parts[1] || ""), decodeURIComponent(parts[2] || ""), decodeURIComponent(parts[3] || ""), decodeURIComponent(parts[4] || ""));
   else if (view === "map") renderMap(app);
   else if (view === "settings") renderSettings(app);
   else renderHome(app);
@@ -669,8 +678,8 @@ function renderHome(app) {
   if (search) {
     const results = dests.filter(
       (d) =>
-        d.name.toLowerCase().includes(search) ||
-        d.iata.toLowerCase().includes(search) ||
+        (d.name || "").toLowerCase().includes(search) ||
+        (d.iata || "").toLowerCase().includes(search) ||
         (d.country || "").toLowerCase().includes(search) ||
         (d.city || "").toLowerCase().includes(search)
     );
@@ -731,9 +740,7 @@ function renderHome(app) {
   app.querySelectorAll(".continent-card").forEach((el) => {
     el.addEventListener("click", () => navigate("#/continent/" + encodeURIComponent(el.dataset.continent)));
   });
-  app.querySelectorAll("[data-dest-id]").forEach((el) => {
-    el.addEventListener("click", () => navigate("#/dest/" + encodeURIComponent(el.dataset.destId)));
-  });
+  attachDestCardEvents(app);
   app.querySelector("#fab-add").addEventListener("click", () => navigate("#/dest-new"));
   const searchInput = app.querySelector("#search-input");
   searchInput.addEventListener("input", (e) => {
@@ -756,7 +763,6 @@ function iataOrIconFor(d) {
 
 function destCardHtml(d, opts) {
   opts = opts || {};
-  const st = STATUS[d.status] || STATUS.geplant;
   const continentLabel = (CONTINENTS.find((c) => c.key === d.continent) || {}).label || "";
   const locationLabel = [d.city, d.country].filter(Boolean).join(", ") || continentLabel;
   const cat = d.category ? CATEGORIES.find((c) => c.key === d.category) : null;
@@ -765,9 +771,11 @@ function destCardHtml(d, opts) {
     <div class="dest-card" data-dest-id="${d.id}">
       <div class="dest-iata${iataBox.isIcon ? " icon-mode" : ""}">${escapeHtml(iataBox.text)}</div>
       <div class="dest-info">
-        <div class="dest-name">${escapeHtml(d.name)}${d.favorite ? ' <span class="dest-fav">★</span>' : ""}</div>
+        <div class="dest-name-row">
+          <div class="dest-name">${escapeHtml(d.name)}${d.favorite ? ' <span class="dest-fav">★</span>' : ""}</div>
+          ${statusToggleHtml(d, { context: "card" })}
+        </div>
         <div class="dest-sub">
-          <span class="status-pill status-${d.status}">${st.emoji} ${st.label}</span>
           ${cat ? `<span class="category-pill">${cat.emoji} ${cat.label}</span>` : ""}
           ${d.status === "besucht" && d.rating ? `<span class="dest-stars">${starString(d.rating)}</span>` : ""}
           ${!opts.hideLocation && locationLabel ? `<span>${escapeHtml(locationLabel)}</span>` : ""}
@@ -775,6 +783,64 @@ function destCardHtml(d, opts) {
       </div>
     </div>
   `;
+}
+
+// Ein iOS-artiger, verschiebbarer Segment-Schalter für den Besuchsstatus.
+// Tippen auf ein Segment setzt den Status direkt (Besucht = grün, Geplant = blau,
+// Kein Interesse = grau) und der Schieber gleitet animiert an die neue Position.
+function statusToggleHtml(d, opts) {
+  opts = opts || {};
+  const context = opts.context || "card";
+  const order = ["besucht", "geplant", "keinInteresse"];
+  return `
+    <div class="status-toggle" data-dest-id="${d.id}" data-status="${d.status}" data-context="${context}">
+      <div class="status-toggle-thumb"></div>
+      ${order
+        .map(
+          (k) =>
+            `<div class="status-toggle-seg" data-s="${k}" title="${STATUS[k].label}">${STATUS[k].emoji}</div>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+// Klick auf ein Segment eines Status-Schalters ändert den Status direkt,
+// ohne den Bearbeitungsbildschirm öffnen zu müssen.
+function attachStatusToggleEvents(app) {
+  app.querySelectorAll(".status-toggle").forEach((toggle) => {
+    toggle.querySelectorAll(".status-toggle-seg").forEach((seg) => {
+      seg.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const destId = toggle.dataset.destId;
+        const newStatus = seg.dataset.s;
+        if (toggle.dataset.status === newStatus) return;
+        const list = loadDestinations();
+        const idx = list.findIndex((x) => x.id === destId);
+        if (idx < 0) return;
+        list[idx].status = newStatus;
+        saveDestinations(list);
+        if (toggle.dataset.context === "hero") {
+          renderDestinationDetail(app, destId);
+        } else {
+          toggle.dataset.status = newStatus;
+          toast(`${STATUS[newStatus].emoji} ${STATUS[newStatus].label}`);
+        }
+      });
+    });
+  });
+}
+
+// Wird auf jede Ansicht angewendet, die Zielort-Karten (dest-card) auflistet:
+// Klick auf die Karte öffnet die Detailansicht, Klick auf den Status-Schalter nicht.
+function attachDestCardEvents(app) {
+  app.querySelectorAll(".dest-card[data-dest-id]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".status-toggle")) return;
+      navigate("#/dest/" + encodeURIComponent(el.dataset.destId));
+    });
+  });
+  attachStatusToggleEvents(app);
 }
 
 const UNKNOWN_COUNTRY = "Unbekanntes Land";
@@ -950,20 +1016,29 @@ function groupByCountryAndCity(dests) {
   });
 }
 
-function renderGroupedDestinations(grouped) {
+// Rendert Länder als Überschrift und Städte als tippbare Ordner-Karten.
+// Ein Städte-Ordner muss geöffnet werden, um die enthaltenen Orte zu sehen.
+function renderCountryCityFolders(grouped, continentKey, cityRefs) {
   return grouped
     .map(
       (g) => `
       <div class="country-group">
-        <div class="country-heading">${g.country === UNKNOWN_COUNTRY ? "\uD83C\uDFF3\uFE0F" : countryFlagEmoji(g.country) || "\uD83D\uDCCD"} ${escapeHtml(g.country)}</div>
-        ${g.cities
-          .map(
-            (c) => `
-            ${c.city !== UNKNOWN_CITY ? `<div class="city-heading">\uD83C\uDFD9\uFE0F ${escapeHtml(c.city)}</div>` : ""}
-            ${c.items.map((d) => destCardHtml(d, { hideLocation: true })).join("")}
-          `
-          )
-          .join("")}
+        <div class="country-heading">${g.country === UNKNOWN_COUNTRY ? "🏳️" : countryFlagEmoji(g.country) || "📍"} ${escapeHtml(g.country)}</div>
+        <div class="city-folder-grid">
+          ${g.cities
+            .map((c) => {
+              const idx = cityRefs.length;
+              cityRefs.push({ country: g.country, city: c.city });
+              return `
+                <div class="city-folder-card" data-idx="${idx}">
+                  <div class="city-folder-icon">📁</div>
+                  <div class="city-folder-name">${c.city === UNKNOWN_CITY ? "📍 " : "🏙️ "}${escapeHtml(c.city)}</div>
+                  <div class="city-folder-count">${c.items.length} Ort${c.items.length === 1 ? "" : "e"}</div>
+                </div>
+              `;
+            })
+            .join("")}
+        </div>
       </div>
     `
     )
@@ -977,13 +1052,14 @@ function renderContinentDetail(app, continentKey) {
   const cont = CONTINENTS.find((c) => c.key === continentKey);
   const dests = loadDestinations().filter((d) => d.continent === continentKey);
   const grouped = groupByCountryAndCity(dests);
+  const cityRefs = [];
 
   app.innerHTML = `
     ${topBar(`${cont ? cont.emoji + " " + cont.label : "Kontinent"}`, { back: true })}
     <div class="screen" style="padding-bottom: 100px;">
       ${
         dests.length
-          ? renderGroupedDestinations(grouped)
+          ? renderCountryCityFolders(grouped, continentKey, cityRefs)
           : `<div class="empty-state"><div class="emoji">${cont ? cont.emoji : "🌍"}</div><p>Noch keine Zielorte in ${cont ? cont.label : ""}.</p></div>`
       }
     </div>
@@ -991,9 +1067,121 @@ function renderContinentDetail(app, continentKey) {
   `;
 
   attachTopBarEvents(app);
-  app.querySelectorAll("[data-dest-id]").forEach((el) => {
-    el.addEventListener("click", () => navigate("#/dest/" + encodeURIComponent(el.dataset.destId)));
+  app.querySelectorAll(".city-folder-card").forEach((el) => {
+    el.addEventListener("click", () => {
+      const ref = cityRefs[Number(el.dataset.idx)];
+      navigate(
+        "#/city/" +
+          encodeURIComponent(continentKey) +
+          "/" +
+          encodeURIComponent(ref.country) +
+          "/" +
+          encodeURIComponent(ref.city)
+      );
+    });
   });
+  app.querySelector("#fab-add").addEventListener("click", () => navigate("#/dest-new/" + encodeURIComponent(continentKey)));
+}
+
+/* ===========================================================
+   CITY DETAIL — Kategorie-Ordner innerhalb einer Stadt
+   =========================================================== */
+function renderCityDetail(app, continentKey, country, city) {
+  const dests = loadDestinations().filter((d) => {
+    if (d.continent !== continentKey) return false;
+    return ((d.country || "").trim() || UNKNOWN_COUNTRY) === country && ((d.city || "").trim() || UNKNOWN_CITY) === city;
+  });
+
+  const catCounts = {};
+  let noneCount = 0;
+  dests.forEach((d) => {
+    if (d.category) catCounts[d.category] = (catCounts[d.category] || 0) + 1;
+    else noneCount++;
+  });
+
+  const categoryCards = CATEGORIES.filter((c) => catCounts[c.key]).map(
+    (c) => `
+      <div class="category-card" data-cat="${c.key}">
+        <div class="count">${catCounts[c.key]}</div>
+        <div class="emoji">${c.emoji}</div>
+        <div class="name">${c.label}</div>
+      </div>
+    `
+  ).join("");
+
+  const noneCard = noneCount
+    ? `
+      <div class="category-card" data-cat="__none__">
+        <div class="count">${noneCount}</div>
+        <div class="emoji">📍</div>
+        <div class="name">Ohne Kategorie</div>
+      </div>
+    `
+    : "";
+
+  const flag = country === UNKNOWN_COUNTRY ? "🏳️" : countryFlagEmoji(country) || "📍";
+
+  app.innerHTML = `
+    ${topBar(`${city === UNKNOWN_CITY ? "📍 " + escapeHtml(city) : "🏙️ " + escapeHtml(city)}`, { back: true })}
+    <div class="screen" style="padding-bottom: 100px;">
+      <div style="color:var(--text-faint); font-size:0.82rem; padding:0 var(--space-4); margin-bottom:var(--space-2);">${flag} ${escapeHtml(country)}</div>
+      ${
+        dests.length
+          ? `<div class="section-label">Kategorien</div><div class="category-grid">${categoryCards}${noneCard}</div>`
+          : `<div class="empty-state"><div class="emoji">🏙️</div><p>Noch keine Orte hier.</p></div>`
+      }
+    </div>
+    <button class="fab" id="fab-add" aria-label="Zielort hinzufügen">+</button>
+  `;
+
+  attachTopBarEvents(app);
+  app.querySelectorAll(".category-card").forEach((el) => {
+    el.addEventListener("click", () => {
+      navigate(
+        "#/city-cat/" +
+          encodeURIComponent(continentKey) +
+          "/" +
+          encodeURIComponent(country) +
+          "/" +
+          encodeURIComponent(city) +
+          "/" +
+          encodeURIComponent(el.dataset.cat)
+      );
+    });
+  });
+  app.querySelector("#fab-add").addEventListener("click", () => navigate("#/dest-new/" + encodeURIComponent(continentKey)));
+}
+
+/* ===========================================================
+   CITY CATEGORY LIST — alle Orte einer Kategorie in einer Stadt
+   =========================================================== */
+function renderCityCategoryList(app, continentKey, country, city, catKey) {
+  const dests = loadDestinations().filter((d) => {
+    if (d.continent !== continentKey) return false;
+    const dc = (d.country || "").trim() || UNKNOWN_COUNTRY;
+    const dci = (d.city || "").trim() || UNKNOWN_CITY;
+    if (dc !== country || dci !== city) return false;
+    if (catKey === "__none__") return !d.category;
+    return d.category === catKey;
+  });
+  const cat = CATEGORIES.find((c) => c.key === catKey);
+  const title = cat ? `${cat.emoji} ${cat.label}` : "📍 Ohne Kategorie";
+
+  app.innerHTML = `
+    ${topBar(title, { back: true })}
+    <div class="screen" style="padding-bottom: 100px;">
+      <div style="color:var(--text-faint); font-size:0.82rem; margin-bottom:16px;">${escapeHtml(city)}, ${escapeHtml(country)}</div>
+      ${
+        dests.length
+          ? dests.map((d) => destCardHtml(d, { hideLocation: true })).join("")
+          : `<div class="empty-state"><div class="emoji">${cat ? cat.emoji : "📍"}</div><p>Noch keine Einträge in dieser Kategorie.</p></div>`
+      }
+    </div>
+    <button class="fab" id="fab-add" aria-label="Zielort hinzufügen">+</button>
+  `;
+
+  attachTopBarEvents(app);
+  attachDestCardEvents(app);
   app.querySelector("#fab-add").addEventListener("click", () => navigate("#/dest-new/" + encodeURIComponent(continentKey)));
 }
 
@@ -1219,7 +1407,7 @@ function renderDestinationForm(app, destId, presetContinent) {
       else list.push(formState);
       saveDestinations(list);
       toast("Gespeichert");
-      navigate("#/dest/" + encodeURIComponent(formState.id));
+      navigateReplace("#/dest/" + encodeURIComponent(formState.id));
     });
   }
 
@@ -1285,7 +1473,7 @@ function renderDestinationDetail(app, destId) {
       <div class="dest-iata-big${iataOrIconFor(d).isIcon ? " icon-mode" : ""}">${escapeHtml(iataOrIconFor(d).text)}</div>
       <div class="dest-fullname">${escapeHtml(d.name)}${[d.city, d.country].filter(Boolean).length ? ", " + escapeHtml([d.city, d.country].filter(Boolean).join(", ")) : ""}</div>
       <div class="dest-meta-row">
-        <span class="status-pill status-${d.status}">${st.emoji} ${st.label}</span>
+        ${statusToggleHtml(d, { context: "hero" })}
         ${d.status === "besucht" && d.rating ? `<span class="dest-stars">${starString(d.rating)}</span>` : ""}
         ${d.favorite ? `<span class="dest-fav">★ Favorit</span>` : ""}
         <span style="color:var(--text-faint); font-size:0.8rem;">${escapeHtml(continentLabel)}</span>
@@ -1309,6 +1497,7 @@ function renderDestinationDetail(app, destId) {
   `;
 
   attachTopBarEvents(app);
+  attachStatusToggleEvents(app);
   app.querySelector("#btn-edit").addEventListener("click", () => navigate("#/dest-edit/" + encodeURIComponent(d.id)));
   app.querySelectorAll(".category-card").forEach((el) => {
     el.addEventListener("click", () => navigate("#/category/" + encodeURIComponent(d.id) + "/" + encodeURIComponent(el.dataset.cat)));
@@ -1492,7 +1681,7 @@ function renderEntryForm(app, destId, catKey, entryId) {
     else freshDest.categories[catKey].push(newEntry);
     saveDestinations(freshList);
     toast("Gespeichert");
-    navigate("#/category/" + encodeURIComponent(destId) + "/" + encodeURIComponent(catKey));
+    navigateReplace("#/category/" + encodeURIComponent(destId) + "/" + encodeURIComponent(catKey));
   });
 
   if (existing) {
@@ -1503,7 +1692,7 @@ function renderEntryForm(app, destId, catKey, entryId) {
         freshDest.categories[catKey] = freshDest.categories[catKey].filter((x) => x.id !== entryId);
         saveDestinations(freshList);
         toast("Eintrag gelöscht");
-        navigate("#/category/" + encodeURIComponent(destId) + "/" + encodeURIComponent(catKey));
+        navigateReplace("#/category/" + encodeURIComponent(destId) + "/" + encodeURIComponent(catKey));
       });
     });
   }
